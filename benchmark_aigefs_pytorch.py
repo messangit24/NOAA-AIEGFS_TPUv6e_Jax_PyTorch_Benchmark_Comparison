@@ -521,7 +521,7 @@ class AIGEFSBenchmarkPyTorch:
         os.makedirs(self.profile_dir, exist_ok=True)
 
         # Cloud bucket path
-        self.gcs_run_folder = f"{self.output_dest.rstrip('/')}/{self.timestamp_str}"
+        self.gcs_run_folder = f"{self.output_dest.rstrip('/')}/{self.timestamp_str}_aiegfs"
 
         # Internal metric trackers
         self.metrics: Dict[str, Any] = {}
@@ -773,53 +773,37 @@ class AIGEFSBenchmarkPyTorch:
             lead_str = f"{days}day" if hours % 24 == 0 else f"{hours}h"
             cycle_str = t0_datetime.strftime("t%Hz")
 
-            try:
-                if self.output_dest.startswith("gs://"):
-                    output_location = f"{self.gcs_run_folder}/{case_name}.{cycle_str}.forecast_pytorch_{lead_str}_{self.timestamp_str}.zarr"
-                    print(f"Streaming forecast Zarr store directly to Google Cloud Storage: {output_location}...")
-                    encoding = {}
-                    for v in ds_forecast.data_vars:
-                        if "level" in ds_forecast[v].dims:
-                            encoding[v] = {"chunks": (1, min(8, self.lead_steps), len(PRESSURE_LEVELS), n_lat, n_lon)}
-                        else:
-                            encoding[v] = {"chunks": (1, min(8, self.lead_steps), n_lat, n_lon)}
-                    ds_forecast.to_zarr(output_location, mode="w", consolidated=True, encoding=encoding)
-                    print(f"Forecast successfully streamed to GCS: {output_location}!")
+            nc_filename = f"{case_name}.{cycle_str}.forecast_pytorch_{lead_str}_{self.timestamp_str}.nc"
+            local_stage_file = os.path.join("/tmp/aigefs_forecasts", nc_filename)
+            os.makedirs(os.path.dirname(local_stage_file), exist_ok=True)
+            self.local_forecast_file = local_stage_file
+
+            if self.output_dest.startswith("gs://"):
+                gcs_target = f"{self.gcs_run_folder}/{nc_filename}"
+                print(f"Generating forecast NetCDF dataset locally for high-throughput GCS streaming: {local_stage_file}...")
+                ds_forecast.to_netcdf(local_stage_file)
+                print(f"Automatically uploading forecast dataset directly to GCS bucket: {gcs_target}...")
+                res = subprocess.run(["gcloud", "storage", "cp", local_stage_file, gcs_target], capture_output=True, text=True)
+                if res.returncode == 0:
+                    output_location = gcs_target
+                    print(f"Forecast dataset successfully uploaded to GCS: {output_location}!")
                 else:
-                    os.makedirs(self.output_dest, exist_ok=True)
-                    output_location = os.path.join(
-                        self.output_dest,
-                        f"{case_name}.{cycle_str}.forecast_pytorch_{lead_str}_{self.timestamp_str}.nc",
-                    )
-                    if self.async_save:
-                        def _bg_nc_save(ds_obj, target_p):
-                            ds_obj.to_netcdf(target_p)
-                            print(f"\n[Async Writer] Forecast dataset saved to: {target_p}")
-                        t_nc = threading.Thread(target=_bg_nc_save, args=(ds_forecast, output_location), daemon=True)
-                        t_nc.start()
-                        print(f"Forecast dataset saving asynchronously in background: {output_location}")
-                    else:
-                        print(f"Saving forecast NetCDF dataset locally: {output_location}...")
-                        ds_forecast.to_netcdf(output_location)
-                        print(f"Forecast successfully saved: {output_location}!")
-            except Exception as e_save:
-                print(f"Warning: Output streaming encountered error ({e_save}). Saving output locally...")
-                local_dir = "/tmp/aigefs_forecasts"
-                os.makedirs(local_dir, exist_ok=True)
-                output_location = os.path.join(
-                    local_dir,
-                    f"{case_name}.{cycle_str}.forecast_pytorch_{lead_str}_{self.timestamp_str}.nc",
-                )
+                    print(f"Warning: GCS upload encountered an issue ({res.stderr.strip()}). Preserving file at: {local_stage_file}")
+                    output_location = local_stage_file
+            else:
+                os.makedirs(self.output_dest, exist_ok=True)
+                output_location = os.path.join(self.output_dest, nc_filename)
                 if self.async_save:
-                    def _bg_fallback_save(ds_obj, target_p):
+                    def _bg_nc_save(ds_obj, target_p):
                         ds_obj.to_netcdf(target_p)
-                        print(f"\n[Async Writer] Forecast saved to fallback: {target_p}")
-                    t_fall = threading.Thread(target=_bg_fallback_save, args=(ds_forecast, output_location), daemon=True)
-                    t_fall.start()
+                        print(f"\n[Async Writer] Forecast dataset saved to: {target_p}")
+                    t_nc = threading.Thread(target=_bg_nc_save, args=(ds_forecast, output_location), daemon=True)
+                    t_nc.start()
                     print(f"Forecast dataset saving asynchronously in background: {output_location}")
                 else:
+                    print(f"Saving forecast NetCDF dataset locally: {output_location}...")
                     ds_forecast.to_netcdf(output_location)
-                    print(f"Forecast saved to fallback location: {output_location}")
+                    print(f"Forecast successfully saved: {output_location}!")
 
         t_save_time = time.perf_counter() - t_save_start
         self.metrics["output_save_time_sec"] = t_save_time
@@ -1007,6 +991,16 @@ Full 31-Member Ensemble     ${m.get('ensemble_31_cycle_cost_usd', 0.0):.3f} USD 
         # Upload artifacts to GCS if requested
         if self.upload_to_gcs and self.output_dest.startswith("gs://"):
             print(f"[GCS] Attempting upload of benchmark artifacts to: {self.gcs_run_folder}...")
+
+            # Verify / ensure forecast dataset file is in GCS
+            if hasattr(self, "local_forecast_file") and os.path.isfile(self.local_forecast_file):
+                nc_name = os.path.basename(self.local_forecast_file)
+                gcs_nc = f"{self.gcs_run_folder}/{nc_name}"
+                check_exist = subprocess.run(["gcloud", "storage", "ls", gcs_nc], capture_output=True, text=True)
+                if check_exist.returncode != 0:
+                    print(f"[GCS] Uploading forecast dataset: {self.local_forecast_file} -> {gcs_nc}...")
+                    subprocess.run(["gcloud", "storage", "cp", self.local_forecast_file, gcs_nc], check=False)
+
             res_txt = subprocess.run(
                 ["gcloud", "storage", "cp", local_report_file, f"{self.gcs_run_folder}/"],
                 capture_output=True, text=True, check=False,
