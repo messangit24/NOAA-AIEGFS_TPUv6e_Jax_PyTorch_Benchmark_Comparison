@@ -1,0 +1,46 @@
+{
+  "active_device": "xla:0 (TPU v6e)",
+  "weights_and_stats_load_time_sec": 0.05947123793885112,
+  "input_ingest_time_sec": 1.892246627015993,
+  "case_name": "aigefs",
+  "jit_compilation_time_sec": 8.362202789983712,
+  "pure_rollout_time_sec": 8.98294783604797,
+  "per_step_latency_ms": 1122.8684795059962,
+  "on_device_compute_time_sec": 7.977803839952685,
+  "on_device_step_latency_ms": 997.2254799940856,
+  "d2h_transfer_time_sec": 1.0022616259520873,
+  "output_save_time_sec": 1.0100193321704865e-06,
+  "output_location": "",
+  "total_end_to_end_time_sec": 21.07318642095197,
+  "e2e_per_step_latency_ms": 2634.1483026189962,
+  "framework": "PyTorch-XLA 2.5.1+cpu (torch_xla 2.5.1)",
+  "total_model_tflops": 11.2,
+  "achieved_tflops_sec": 1.2468067503470461,
+  "model_flops_utilization_mfu_pct": 0.1358177287959745,
+  "achieved_hbm_bandwidth_gbps": 3.3841897509419825,
+  "memory_bandwidth_utilization_mbu_pct": 0.20660499089999892,
+  "energy_consumed_wh": 0.6861974041425533,
+  "energy_consumed_joules": 2470.3106549131917,
+  "forecast_cost_usd": 0.00436671075363443,
+  "ensemble_31_cycle_cost_usd": 0.13536803336266734,
+  "ensemble_31_cycle_energy_wh": 21.27211952841915,
+  "forecast_simulated_days_per_min": 13.35864375371835,
+  "comparison": {
+    "h100": {
+      "est_rollout_sec": 7.5,
+      "speedup_factor": 0.834915234607397,
+      "energy_wh": 1.4583333333333333,
+      "energy_efficiency_factor": 2.1252387790006466,
+      "cost_usd": 0.0076458333333333335,
+      "cost_efficiency_factor": 1.7509365205766554
+    },
+    "a100": {
+      "est_rollout_sec": 16.25,
+      "speedup_factor": 1.8089830083160268,
+      "energy_wh": 1.8055555555555556,
+      "energy_efficiency_factor": 2.631248012096039,
+      "cost_usd": 0.01656597222222222,
+      "cost_efficiency_factor": 3.793695794582753
+    }
+  }
+}

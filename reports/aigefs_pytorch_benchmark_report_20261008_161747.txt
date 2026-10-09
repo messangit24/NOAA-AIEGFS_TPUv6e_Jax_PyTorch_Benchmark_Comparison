@@ -1,0 +1,69 @@
+================================================================================
+           NOAA AIGEFS BENCHMARK & xProf TELEMETRY REPORT (PyTorch-XLA)
+================================================================================
+Generated:                  2026-10-08 16:17:47 UTC
+Framework:                  PyTorch-XLA 2.5.1+cpu (torch_xla 2.5.1)
+Target Hardware:            Google Cloud TPU v6e (Trillium, 1 Core)
+Architecture:               Google Trillium TPU v6e (1 Tensor Core, 32 GB HBM)
+Operational Model:          AIGEFS GraphCast (0.25° Global Resolution, 13 Pressure Levels)
+Ensemble Member Tested:     Member 0 (aigefs)
+Forecast Horizon:           8 steps (48 Hours / 2.0 Days)
+Rollout Chunk Strategy:     8 steps/chunk on TPU
+Arithmetic Precision:       bfloat16 (Native TPU Matrix Multiply Unit BF16)
+--------------------------------------------------------------------------------
+
+1. LATENCY & ROLLOUT TIMING BREAKDOWN
+--------------------------------------------------------------------------------
+• Checkpoint & Stats Ingest Time:     0.06 s
+• Initial Condition Ingest Time:     1.89 s
+• JIT Compilation Latency:           8.36 s  (One-time AOT compilation)
+• Pure TPU Accelerator Rollout Time: 8.983 s  (Active on-device inference)
+• Pure TPU MXU On-Device Execution:  7.978 s  (997.23 ms/step)
+• Host Memory Transfer (D2H):        1.002 s
+• Single 6-Hour Step Latency:        1122.87 ms/step
+• Cloud Output Save / Stream Time:   0.00 s
+• Total End-to-End Time:             21.07 s
+• End-to-End Per-Step Latency:       2634.15 ms/step
+• Forecast Rate:                     13.36 simulated days/min
+
+2. COMPUTE, MEMORY & ENERGY UTILIZATION (Pure TPU Rollout)
+--------------------------------------------------------------------------------
+• Total Model FLOPs:                 11.20 TFLOPs (8 x 1.40 TFLOPs)
+• Achieved Compute Throughput:       1.25 TFLOPs/sec
+• Model FLOPs Utilization (MFU):     0.14 %  (vs 918.0 TFLOPs peak)
+• Measured HBM Memory Bandwidth:     3.38 GB/s
+• Memory Bandwidth Utilization (MBU):0.21 %  (vs 1638.0 GB/s peak)
+• Accelerator TDP Power Rating:      275.0 W
+• Energy Consumed per Forecast:      0.686 Wh (2470.3 Joules)
+• Cost per 16-Day Forecast:          $0.004367 USD (@ $1.75/hr)
+• Projected 31-Member Cycle Cost:    $0.1354 USD (Total: 0.021 kWh)
+
+================================================================================
+3. HEAD-TO-HEAD BENCHMARK COMPARISON: TPU v6e vs. GPUs
+================================================================================
+Metric                      TPU v6e (Trillium)   NVIDIA H100 SXM5     NVIDIA A100 SXM4
+--------------------------------------------------------------------------------
+Accelerator Architecture    TPU v6e (1 core)     Hopper GH100         Ampere GA100
+Peak BF16 TFLOPs/sec        918.0 TFLOPs         989.0 TFLOPs         312.0 TFLOPs
+Peak Memory Bandwidth       1638.0 GB/s         3350.0 GB/s         2039.0 GB/s
+Accelerator Memory          32 GB HBM            80 GB HBM3           80 GB HBM2e
+Accelerator TDP (Power)     275.0 W                700.0 W                400.0 W
+GCP Hourly Cost ($/hr)      $1.75 / hr           $3.67 / hr           $3.67 / hr
+--------------------------------------------------------------------------------
+Pure Rollout Time (8 steps) 8.98 s              7.50 s             16.25 s
+Per-Step Rollout Latency    1122.9 ms/step        937.5 ms/step        2031.2 ms/step
+Rollout Speedup Factor      BASELINE             0.83x faster on TPU   1.81x faster on TPU
+Energy per Forecast (Wh)    0.69 Wh             1.46 Wh            1.81 Wh
+Energy Efficiency Factor    BASELINE             2.13x lower energy  2.63x lower energy
+Cost per 16-Day Forecast    $0.0044 USD          $0.0076 USD          $0.0166 USD
+Cost Efficiency Factor      BASELINE             1.75x cheaper on TPU   3.79x cheaper on TPU
+Full 31-Member Ensemble     $0.135 USD           $0.237 USD          $0.514 USD
+================================================================================
+
+4. ARTIFACTS & CLOUD LOCATIONS
+--------------------------------------------------------------------------------
+• Forecast Dataset Location:         
+• Benchmark Report Text:            gs://mb-noaa-eu/outputs/20261008_161747/aigefs_pytorch_report_20261008_161747.txt
+• Benchmark Metrics JSON:           gs://mb-noaa-eu/outputs/20261008_161747/aigefs_pytorch_metrics_20261008_161747.json
+• xProf Profile Trace Directory:    /home/admin_messan_altostrat_com/aiegfs/reports/xprof_traces/xprof_pytorch_20261008_161747
+================================================================================

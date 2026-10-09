@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Upstream repository and large weights
+aigefs/
+
+# Virtual environments
+venv*/
+.venv/
+env/
+
+# System / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# JAX / XLA compilation caches
+.jax_cache/

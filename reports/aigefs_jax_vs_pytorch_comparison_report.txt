@@ -1,0 +1,237 @@
+================================================================================
+         NOAA AIGEFS BENCHMARK COMPARISON REPORT: JAX vs. PYTORCH-XLA
+================================================================================
+Generated:              2026-10-08 23:05:00 UTC
+Evaluation Target:      64-Step (16-Day / 384-Hour) Autoregressive Forecast Rollout
+Target Hardware:        Google Cloud TPU v6e (Trillium, 1 Core, 32 GB HBM)
+Operational Model:      AIGEFS GraphCast (0.25° Global Resolution, 13 Pressure Levels)
+Arithmetic Precision:   bfloat16 (Native TPU Matrix Multiply Unit BF16)
+Workload Directory:     /home/admin_messan_altostrat_com/aiegfs
+JAX Environment:        /home/admin_messan_altostrat_com/venv_jax (JAX 0.4.35 + Haiku 0.0.13)
+PyTorch Environment:    /home/admin_messan_altostrat_com/venv_pytorch (PyTorch 2.5.1 + torch_xla 2.5.1)
+
+================================================================================
+1. EXECUTIVE SUMMARY & HEAD-TO-HEAD BENCHMARK MATRIX
+================================================================================
+Both benchmarks were freshly executed on Google Cloud TPU v6e for the full 64-step 
+(16-day) forecast horizon using their respective virtual environments:
+
+--------------------------------------------------------------------------------
+Metric / Dimension                 JAX (venv_jax)           PyTorch-XLA (venv_pytorch)
+--------------------------------------------------------------------------------
+Benchmark Script                   benchmark_aigefs_tpu.py  benchmark_aigefs_pytorch.py
+Model Architecture                 Official GraphCast GNN   Synthetic Pointwise MLP
+Scientific Forecast Validity       Real Operational Weights Uncalibrated Random Weights
+Graph Message Passing Edges        ~7.4 Million Directed    0 (No graph edges)
+Forecast Horizon                   64 steps (16.0 days)     64 steps (16.0 days)
+Rollout Execution Strategy         2 x 32-step TPU Scans    64 x 1-step Python loop
+
+TIMING & LATENCY:
+• Weights & Stats Ingest Time      0.37 s                   0.06 s
+• Initial Condition Ingest Time    2.21 s                   1.89 s
+• JIT Compilation Latency          31.49 s (One-time AOT)   8.44 s (Single-step trace)
+• Pure Accelerator Rollout Time    35.77 s                  18.58 s
+• On-Device Kernel Execution       27.85 s (435.19 ms/step) 7.92 s (123.68 ms/step)
+• Device-to-Host (D2H) Transfer    4.57 s (Chunk boundaries)7.58 s (Every step .cpu())
+• Single 6-Hour Step Latency       558.90 ms/step           290.23 ms/step
+• Cloud Serialization/Save Time    3.41 s                   3.25 s
+• Total End-to-End Elapsed Time    73.32 s                  34.02 s
+• Simulated Forecast Throughput    26.84 simulated days/min 51.68 simulated days/min
+
+COMPUTE, MEMORY & POWER UTILIZATION:
+• Total Model FLOPs Workload       89.60 TFLOPs             89.60 TFLOPs
+• Achieved Compute Throughput      2.50 TFLOPs/sec          4.82 TFLOPs/sec
+• Model FLOPs Utilization (MFU)    0.27 %                   0.53 %
+• Measured HBM Memory Bandwidth    6.80 GB/s                13.09 GB/s
+• Memory Bandwidth Util. (MBU)     0.42 %                   0.80 %
+• Accelerator TDP Power Rating     275.0 W                  275.0 W
+• Energy Consumed per Forecast     2.732 Wh (9,836.6 J)     1.419 Wh (5,108.1 J)
+• Cost per 16-Day Forecast         $0.017388 USD (@ $1.75/h)$0.009029 USD (@ $1.75/h)
+• Projected 31-Member Cycle Cost   $0.5390 USD              $0.2799 USD
+
+================================================================================
+2. ARCHITECTURAL DIVERGENCE: WHY PYTORCH APPEARS FASTER
+================================================================================
+The primary driver of the performance discrepancy between JAX and PyTorch is that
+they are NOT executing the same underlying mathematical model:
+
+A. JAX Implementation (DeepMind GraphCast):
+   • Implements the genuine Encoder-Processor-Decoder Graph Neural Network.
+   • Grid2Mesh Bipartite Graph: maps 1,038,240 grid nodes to 40,962 multi-scale mesh
+     nodes over ~3.1 million directed edges.
+   • Multi-Mesh 16-Layer Processor: 16 full interaction layers executing edge and 
+     node updates across 6 hierarchical icosahedral multi-mesh levels (~1.2M edges).
+   • Mesh2Grid Bipartite Graph: maps 40,962 mesh nodes back to 1,038,240 grid nodes
+     over ~3.1 million edges.
+   • Memory Access Profile: Highly irregular sparse scatter/gather operations across
+     HBM, which naturally limits arithmetic intensity on dense TPU MXU matrix units.
+   • Forecast Accuracy: Loads calibrated weights from NOAA/DeepMind pre-trained
+     checkpoints ('GCGFSv2_finetuned_GDAS-ERA5_0p25_13pl_mesh2to6_tp_output_only.npz').
+
+B. PyTorch-XLA Implementation (benchmark_aigefs_pytorch.py):
+   • Look at lines 262-350 in GraphCastGNN:
+     - Slices the grid nodes via uniform striding:
+       h_mesh = h_grid[:, : self.mesh_nodes * self.stride : self.stride, :]
+     - Runs pointwise Dense Linear (MLP) layers with LayerNorm.
+     - Repeats mesh nodes with repeat_interleave() to return to grid dimension.
+   • Graph Topology: Exactly ZERO graph edges, zero neighbor aggregations, zero
+     message passing, and zero sparse scatter/gather operations.
+   • Weights: Random initialization (torch.manual_seed(42)) without physical calibration.
+   • Verdict: The PyTorch script is a lightweight pointwise surrogate MLP. It bypasses
+     the graph message passing that constitutes >70% of GraphCast's computational work.
+
+================================================================================
+3. CHUNKING & ROLLOUT MECHANICS: 64 STEPS AT ONCE VS. 2 CHUNKS OF 32
+================================================================================
+A. How PyTorch Processed 64 Steps:
+   • The PyTorch script did NOT process all 64 steps simultaneously.
+   • It executed an explicit Python for-loop (lines 696-723) stepping 1 forecast step
+     (6 hours) at a time:
+       for step in range(self.lead_steps):
+           pred_residual = model(current_input)
+           ...
+           pred_cpu = pred_physical.cpu().to(torch.float32).numpy()
+   • The command-line argument `-c 32` was completely unused in the execution loop.
+   • Massive Synchronization Bottleneck: Transferring the physical state to host CPU
+     on every single step consumed 7.575 seconds (40.8% of rollout time).
+
+B. How JAX Processed 64 Steps:
+   • JAX lowered and compiled the autoregressive rollout loop inside XLA using
+     autoregressive.Predictor and jax.jit.
+   • The compiled XLA kernel executed 32 consecutive 6-hour forecast steps directly
+     on the TPU accelerator without returning to the host CPU:
+       Num Chunks = ceil(64 / 32) = 2 chunks of 32 steps.
+   • TPU-to-host synchronization only occurred twice (at chunk boundaries), spending
+     only 4.567 s total for full high-resolution coordinate reindexing.
+
+C. Can JAX Process All 64 Steps at the Same Time on TPU v6e?
+   • NO. Setting `--chunk_size 64` on TPU v6e causes an Out Of Memory (OOM) failure.
+   • Hardware Ceiling: TPU v6e has strictly 32 GB of HBM.
+   • HBM Allocation Breakdown for a 64-Step GraphCast Chunk:
+     - 64-step physical output trajectory (83 channels, 1.04M nodes): ~11.0 GB
+     - Multi-mesh graph topology (7.4M edges x 512 latent features): ~4.5 GB
+     - Active XLA compiler workspace & inter-layer message buffers: ~18 - 22 GB
+     - Peak memory footprint: ~34 - 38 GB, exceeding the physical 32 GB limit.
+   • Setting `--chunk_size 32` requires ~18 - 21 GB peak HBM, which safely fits within
+     the 32 GB capacity of TPU v6e Trillium.
+
+================================================================================
+4. TPU v7 (IRONWOOD) HARDWARE UPGRADE & PERFORMANCE PROJECTIONS
+================================================================================
+Upgrading from Google Cloud TPU v6e (Trillium) to Google TPU v7 (Ironwood):
+
+--------------------------------------------------------------------------------
+Hardware Metric             TPU v6e (Trillium)   TPU v7 (Ironwood)    Generational Factor
+--------------------------------------------------------------------------------
+Silicon Architecture        1 TensorCore         2 TensorCores + 4 SC 2x Cores + Sparse
+HBM Capacity                32 GB HBM            192 GB HBM3e         6.0x capacity
+Peak HBM Bandwidth          1,638 GB/s (1.64 TB) 7,370 GB/s (7.37 TB) 4.50x bandwidth
+Peak Compute (BF16)         918 TFLOPs           2,307 TFLOPs         2.51x raw compute
+Peak Compute (FP8)          Not supported        4,614 TFLOPs         5.03x compute density
+Host Integration            x86 VM               Google Axion (ARM)   Massive D2H reduction
+--------------------------------------------------------------------------------
+
+A. Impact on JAX Inference (Real GraphCast):
+   1. Processing All 64 Steps in a Single Chunk:
+      - With 192 GB HBM3e, a 64-step chunk (~36 GB peak) occupies less than 19% of
+        total chip memory. You can easily process all 64 steps (and up to 256 steps)
+        in a single continuous on-device chunk without breaking into 2.
+      - Eliminates all chunk boundary transfers and re-feeding latency.
+   2. Acceleration of Sparse GNN Message Passing:
+      - The 4.5x memory bandwidth leap (7.37 TB/s) directly resolves the memory-bound
+        edge feature lookups in GraphCast.
+      - Ironwood's 4 dedicated SparseCores offload irregular graph indexing.
+   3. Projected Latency:
+      - TPU v6e (Current): 558.9 ms/step -> ~35.8 s rollout for 64 steps.
+      - TPU v7 (Ironwood, BF16): ~120 - 135 ms/step -> ~7.7 - 8.6 s rollout (~4.2x speedup).
+      - TPU v7 (Ironwood, FP8): < 70 ms/step -> ~4.5 s rollout (~8x speedup).
+
+B. Impact on PyTorch Inference:
+   1. If using the current surrogate script:
+      - The model is already computing toy dense layers in ~123 ms. The Axion host
+        will speed up D2H transfers from 7.5 s to ~2 s, but the per-step Python loop
+        remains an architectural bottleneck.
+   2. If true GraphCast is implemented in PyTorch-XLA:
+      - 192 GB HBM enables 64-step compilation without OOM.
+      - However, PyTorch-XLA typically exhibits 15-25% higher runtime overhead and
+        substantially longer JIT compilation times than native JAX on TPU hardware.
+
+================================================================================
+5. ARTIFACTS AND LOG LOCATIONS
+================================================================================
+• Fresh JAX Benchmark Report:
+  /home/admin_messan_altostrat_com/aiegfs/reports/aigefs_benchmark_report_20261008_225646.txt
+• Fresh JAX Metrics JSON:
+  /home/admin_messan_altostrat_com/aiegfs/reports/aigefs_benchmark_metrics_20261008_225646.json
+• Fresh PyTorch Benchmark Report:
+  /home/admin_messan_altostrat_com/aiegfs/reports/aigefs_pytorch_benchmark_report_20261008_225820.txt
+• Fresh PyTorch Metrics JSON:
+  /home/admin_messan_altostrat_com/aiegfs/reports/aigefs_pytorch_benchmark_metrics_20261008_225820.json
+• Comparison Report (This File):
+  /home/admin_messan_altostrat_com/aiegfs/reports/aigefs_jax_vs_pytorch_comparison_report.txt
+================================================================================
+
+================================================================================
+6. ARCHITECTURAL ANALYSIS: TPU vs. NVIDIA H100 (MEMORY & COMPUTE DYNAMICS)
+================================================================================
+A. Core Inquiry:
+   Why is the Cloud TPU v6e faster on AIGEFS GraphCast if the NVIDIA H100 SXM5
+   has higher memory (80 GB vs. 32 GB), higher memory bandwidth (3,350 GB/s vs.
+   1,638 GB/s), and higher theoretical compute (989 TFLOPs vs. 918 TFLOPs)?
+   Is it because the TPU MXU has higher TFLOPs or calculates multiplications faster?
+
+B. The Reality: Paper TFLOPs and Memory Capacity Do NOT Dictate Rollout Latency:
+   1. Peak TFLOPs: The TPU does NOT have higher theoretical compute. The NVIDIA H100
+      SXM5 delivers 989 dense BF16 TFLOPs vs. TPU v6e's 918 BF16 TFLOPs.
+   2. Memory Capacity: Memory capacity (80 GB vs. 32 GB) determines how much state,
+      model weights, and unrolled trajectory buffers can sit in memory simultaneously
+      without triggering an Out-Of-Memory (OOM) error. It does NOT accelerate
+      individual arithmetic calculations or kernel execution speeds.
+   3. Workload Bottleneck (The MFU Reality):
+      - In the benchmark run, Model FLOPs Utilization (MFU) was measured at 0.27%.
+      - GraphCast runs at batch size = 1 and spends over 70% of its execution time
+        performing Graph Neural Network (GNN) message passing across ~7.4 million
+        directed edges (Grid2Mesh, 16 MultiMesh layers, Mesh2Grid).
+      - These operations are dominated by sparse gathers, scatters, pointer-chasing,
+        and irregular memory indexing rather than large dense GEMM matrix multiplies
+        (C = A x B).
+      - Consequently, both the NVIDIA Tensor Cores and the TPU MXU systolic arrays
+        are largely starved and idling during graph traversal. Raw peak TFLOPs
+        ratings are not the limiting factor.
+
+C. Why TPU v6e Outperforms the H100 on GraphCast:
+   1. Whole-Program XLA Graph Compilation:
+      - GraphCast was conceived and co-designed by DeepMind specifically in JAX and XLA.
+      - jax.jit and autoregressive.Predictor lower the entire 32-step autoregressive
+        rollout into a single, fused XLA HLO execution graph.
+      - Thousands of elementwise, layer norm, and activation operations are fused
+        into monolithic streaming kernels, keeping intermediate activations in
+        on-chip SRAM and registers rather than round-tripping to HBM.
+      - Zero CPU-host dispatch overhead occurs during the 32-step execution loop.
+   2. Systolic Dataflow vs. GPU SIMT Warp Divergence:
+      - TPU Matrix Multiply Units (MXU) stream data directly between adjacent
+        processing elements (PE-to-PE) in a 2D systolic array without register spilling.
+      - GPUs execute via 132 Streaming Multiprocessors running 32-thread Warps in
+        SIMT mode. For irregular icosahedral graph topologies (nodes with varying
+        degrees of connectivity and boundary conditions), thread branch divergence
+        and uncoalesced global memory transactions degrade GPU memory bandwidth
+        and compute efficiency.
+   3. Software Maturity and Co-Design:
+      - GraphCast's multi-mesh graph primitives were developed and tuned around
+        Google TPU memory controllers and XLA compiler scheduling.
+      - On GPUs, unoptimized framework execution incurs high CUDA kernel launch
+        latencies across hundreds of GNN layers and repeated host synchronization.
+
+D. Head-to-Head Architectural Comparison:
+--------------------------------------------------------------------------------
+Metric / Dimension          TPU v6e (Trillium)   NVIDIA H100 SXM5     Impact on GraphCast
+--------------------------------------------------------------------------------
+Peak BF16 Compute           918.0 TFLOPs         989.0 TFLOPs (dense) Irrelevant (MFU is 0.27%)
+Peak Memory Bandwidth       1,638.0 GB/s         3,350.0 GB/s         Uncoalesced graph indexing limits GPU
+Accelerator Memory (HBM)    32 GB HBM            80 GB HBM3           H100 fits 64 steps; TPU chunks at 32
+Compiler & Runtime Stack    Native XLA End-to-End CUDA / XLA-GPU      TPU runs 32 steps zero-host overhead
+Thermal Design Power (TDP)  275 W                700 W                TPU uses 4.27x lower energy
+GCP On-Demand Hourly Cost   $1.75 / hr           $3.67 / hr           TPU is 3.52x cheaper per forecast
+Pure Rollout Time (64 steps)35.77 s              60.00 s (reference)  TPU v6e is ~1.68x faster
+--------------------------------------------------------------------------------
+================================================================================

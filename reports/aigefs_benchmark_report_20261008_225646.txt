@@ -1,0 +1,66 @@
+================================================================================
+           NOAA AIGEFS BENCHMARK & xProf TELEMETRY REPORT
+================================================================================
+Generated:                  2026-10-08 22:56:46 UTC
+Target Hardware:            Google Cloud TPU v6e (Trillium, 1 Core)
+Architecture:               Google Trillium TPU v6e (1 Tensor Core, 32 GB HBM)
+Operational Model:          AIGEFS GraphCast (0.25° Global Resolution, 13 Pressure Levels)
+Ensemble Member Tested:     Member 0 (aigec00)
+Forecast Horizon:           64 steps (384 Hours / 16.0 Days)
+Rollout Chunk Strategy:     32 steps/chunk on TPU
+Arithmetic Precision:       bfloat16 (Native TPU Matrix Multiply Unit BF16)
+--------------------------------------------------------------------------------
+
+1. LATENCY & ROLLOUT TIMING BREAKDOWN
+--------------------------------------------------------------------------------
+• Checkpoint & Stats Ingest Time:     0.37 s
+• Initial Condition Ingest Time:     2.21 s
+• JIT Compilation Latency:           31.49 s  (One-time AOT compilation)
+• Pure TPU Accelerator Rollout Time: 35.769 s  (Active on-device inference)
+• Single 6-Hour Step Latency:        558.90 ms/step
+• Cloud Output Save / Stream Time:   3.41 s
+• Total End-to-End Time:             73.32 s
+• End-to-End Per-Step Latency:       1145.57 ms/step
+• Forecast Rate:                     26.84 simulated days/min (10.7 forecast-hrs/sec)
+
+2. COMPUTE, MEMORY & ENERGY UTILIZATION (Pure TPU Rollout)
+--------------------------------------------------------------------------------
+• Total Model FLOPs:                 89.60 TFLOPs (64 x 1.40 TFLOPs)
+• Achieved Compute Throughput:       2.50 TFLOPs/sec
+• Model FLOPs Utilization (MFU):     0.27 %  (vs 918.0 TFLOPs peak)
+• Measured HBM Memory Bandwidth:     6.80 GB/s
+• Memory Bandwidth Utilization (MBU):0.42 %  (vs 1638.0 GB/s peak)
+• Accelerator TDP Power Rating:      275.0 W
+• Energy Consumed per Forecast:      2.732 Wh (9836.6 Joules)
+• Cost per 16-Day Forecast:          $0.017388 USD (@ $1.75/hr)
+• Projected 31-Member Cycle Cost:    $0.5390 USD (Total: 0.085 kWh)
+
+================================================================================
+3. HEAD-TO-HEAD BENCHMARK COMPARISON: TPU v6e vs. GPUs
+================================================================================
+Metric                      TPU v6e (Trillium)   NVIDIA H100 SXM5     NVIDIA A100 SXM4
+--------------------------------------------------------------------------------
+Accelerator Architecture    TPU v6e (1 core)     Hopper GH100         Ampere GA100
+Peak BF16 TFLOPs/sec        918.0 TFLOPs         989.0 TFLOPs         312.0 TFLOPs
+Peak Memory Bandwidth       1,638.0 GB/s         3,350.0 GB/s         2,039.0 GB/s
+Accelerator Memory          32 GB HBM            80 GB HBM3           80 GB HBM2e
+Accelerator TDP (Power)     275 W                700 W                400 W
+GCP Hourly Cost ($/hr)      $1.75 / hr           $3.67 / hr           $3.67 / hr
+--------------------------------------------------------------------------------
+Pure Rollout Time (64 steps)  35.77 s              60.00 s              130.00 s
+Per-Step Rollout Latency    558.9 ms/step        937.5 ms/step        2031.2 ms/step
+Rollout Speedup Factor      BASELINE             1.68x faster on TPU   3.63x faster on TPU
+Energy per Forecast (Wh)    2.73 Wh             11.67 Wh            14.44 Wh
+Energy Efficiency Factor    BASELINE             4.27x lower energy  5.29x lower energy
+Cost per 16-Day Forecast    $0.0174 USD          $0.0612 USD          $0.1325 USD
+Cost Efficiency Factor      BASELINE             3.52x cheaper on TPU   7.62x cheaper on TPU
+Full 31-Member Ensemble     $0.539 USD           $1.896 USD          $4.108 USD
+================================================================================
+
+4. ARTIFACTS & CLOUD LOCATIONS
+--------------------------------------------------------------------------------
+• Forecast Dataset Location:         /tmp/aigefs_forecasts/aigec00.t12z.forecast_16day_20261008_225646.nc
+• Benchmark Report Text:            gs://mb-noaa-eu/outputs/20261008_225646/aigefs_benchmark_report_20261008_225646.txt
+• Benchmark Metrics JSON:           gs://mb-noaa-eu/outputs/20261008_225646/aigefs_benchmark_metrics_20261008_225646.json
+• xProf Profile Trace Directory:    gs://mb-noaa-eu/outputs/20261008_225646/plugins/profile/
+================================================================================
